@@ -2,7 +2,7 @@ name: doctest-parallel-ci
 on:
   push:
     branches:
-      - main
+      # - main
   pull_request:
 
 concurrency:
@@ -10,14 +10,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  cabal:
-    name: ${{ matrix.os }} / Cabal / GHC ${{ matrix.ghc }}
+  benchmark:
+    name: ${{ matrix.os }} / GHC ${{ matrix.ghc }}
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: ["windows-latest", "ubuntu-24.04"]
         ghc:
+          - "9.12.1"
           - "9.10.1"
+          - "9.8.4"
+          - "9.8.3"
           - "9.8.2"
           - "9.8.1"
           - "9.6.6"
@@ -62,7 +65,108 @@ jobs:
           ghc-version: ${{ matrix.ghc }}
           cabal-version: 3.12.1.0
 
-      - name: Hello, world
+      - name: Install hyperfine (Ubuntu)
+        if: matrix.os == 'ubuntu-24.04'
         run: |
-          ghc --version
+          sudo apt-get update
+          sudo apt-get install -y hyperfine
 
+      - name: Install hyperfine (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          choco install hyperfine
+
+      - name: Build doctest-parallel
+        run: |
+          git clone https://github.com/martijnbastiaan/doctest-parallel.git
+          cd doctest-parallel
+          git checkout d3df7aa5d223f3daeb676c8a7efe093ee743d54f
+
+          cabal update
+          cabal build doctests
+
+      # - name: Run benchmarks (Ubuntu)
+      #   if: matrix.os == 'ubuntu-24.04'
+      #   run: |
+      #     bin=$(cabal list-bin benchmark-ghc)
+      #     hyperfine -M 5 --warmup 3 --export-json results-${{ matrix.os }}-${{ matrix.ghc }}.json "${bin}"
+
+      # - name: Run benchmarks (Windows)
+      #   if: matrix.os == 'windows-latest'
+      #   run: |
+      #     $bin = & cabal list-bin benchmark-ghc
+      #     hyperfine -M 5 --warmup 3 --export-json results-${{ matrix.os }}-${{ matrix.ghc }}.json "${bin}"
+
+      - name: Run benchmark
+        run: |
+          cd doctest-parallel
+          hyperfine -M 5 --warmup 3 --export-json results-${{ matrix.os }}-${{ matrix.ghc }}.json "cabal run doctests"
+          cp *.json ..
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-${{ matrix.os }}-${{ matrix.ghc }}
+          path: results-${{ matrix.os }}-${{ matrix.ghc }}.json
+
+  collect-results:
+    name: Collect results
+    needs: benchmark
+    if: ${{ !cancelled() }}
+    runs-on: "ubuntu-24.04"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install JQ + YQ
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq yq
+
+      - name: Download artifacts
+        run: |
+          IFS=$'\n'
+
+          curl \
+            -s \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -L "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts?per_page=1024" \
+            --output "artifacts.json"
+
+          artifact_urls=$(jq -r '.artifacts.[].url' artifacts.json)
+          for artifact_url in $artifact_urls; do
+            echo "Downloading artifact: ${artifact_url}/zip"
+            curl \
+              -s \
+              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -L "${artifact_url}/zip" \
+              --output artifact.zip
+
+              unzip artifact.zip
+              rm -f artifact.zip
+          done
+
+      - name: ls
+        run: |
+          IFS=$'\n'
+
+          oss="$(.github/scripts/get_matrix_values.sh os)"
+          ghcs="$(.github/scripts/get_matrix_values.sh ghc)"
+
+          echo "os,ghc,mean,stddev,median,min,max" > results.csv
+          for os in $oss; do
+            for ghc in $ghcs; do
+              filename="results-${os}-${ghc}.json"
+              if [ -f "${filename}" ]; then
+                echo -n "${os},${ghc}," >> results.csv
+                jq -r '.results[0]|[.mean, .stddev, .median, .min, .max] | @csv' "${filename}" >> results.csv
+              fi
+            done
+          done
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: results.csv
+          path: results.csv
