@@ -60,7 +60,7 @@ jobs:
         id: setup-haskell
         with:
           ghc-version: ${{ matrix.ghc }}
-          cabal: 3.12.1.0
+          cabal-version: 3.12.1.0
 
       - name: Hello, world
         run: |
