@@ -11,103 +11,49 @@ concurrency:
 
 jobs:
   benchmark:
-    name: ${{ matrix.os }} / GHC ${{ matrix.ghc }}
+    name: ${{ matrix.os }} / GHC ${{ matrix.rust }}
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: ["windows-latest", "ubuntu-24.04"]
-        ghc:
-          - "9.12.1"
-          - "9.10.1"
-          - "9.8.4"
-          - "9.8.3"
-          - "9.8.2"
-          - "9.8.1"
-          - "9.6.6"
-          - "9.6.5"
-          - "9.6.4"
-          - "9.6.3"
-          - "9.6.2"
-          - "9.6.1"
-          - "9.4.8"
-          - "9.4.7"
-          - "9.4.6"
-          - "9.4.5"
-          - "9.4.4"
-          - "9.4.3"
-          - "9.4.2"
-          - "9.4.1"
-          - "9.2.8"
-          - "9.2.7"
-          - "9.2.6"
-          - "9.2.5"
-          - "9.2.4"
-          - "9.2.3"
-          - "9.2.2"
-          - "9.2.1"
-          - "8.10.7"
-          - "8.10.6"
-          - "8.10.5"
-          - "8.10.4"
-          - "8.10.3"
-          - "8.10.2"
-          - "8.10.1"
+        os: ["ubuntu-24.04"]
+        rust:
+          - "1.68.2"
+          - "1.67.1"
       fail-fast: false
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Haskell
-        if: matrix.ghc != 'head'
-        uses: haskell-actions/setup@v2.7.5
-        id: setup-haskell
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        id: setup-rust
         with:
-          ghc-version: ${{ matrix.ghc }}
-          cabal-version: 3.12.1.0
+          toolchain: ${{ matrix.rust }}
+          target: "riscv32imc-unknown-none-elf"
+          components: "rustfmt, clippy, rust-src, llvm-tools, llvm-tools-preview"
 
-      - name: Install hyperfine (Ubuntu)
-        if: matrix.os == 'ubuntu-24.04'
+      - name: Install cargo-binutils
         run: |
-          sudo apt-get update
-          sudo apt-get install -y hyperfine
+          cargo install --locked cargo-binutils
 
-      - name: Install hyperfine (Windows)
-        if: matrix.os == 'windows-latest'
+      - name: Build hello binary
         run: |
-          choco install hyperfine
+          cargo build --release
+          cargo build
 
-      - name: Build doctest-parallel
+      - name: Collect results
         run: |
-          git clone https://github.com/martijnbastiaan/doctest-parallel.git
-          cd doctest-parallel
-          git checkout d3df7aa5d223f3daeb676c8a7efe093ee743d54f
-
-          cabal update
-          cabal build doctests
-
-      # - name: Run benchmarks (Ubuntu)
-      #   if: matrix.os == 'ubuntu-24.04'
-      #   run: |
-      #     bin=$(cabal list-bin benchmark-ghc)
-      #     hyperfine -M 5 --warmup 3 --export-json results-${{ matrix.os }}-${{ matrix.ghc }}.json "${bin}"
-
-      # - name: Run benchmarks (Windows)
-      #   if: matrix.os == 'windows-latest'
-      #   run: |
-      #     $bin = & cabal list-bin benchmark-ghc
-      #     hyperfine -M 5 --warmup 3 --export-json results-${{ matrix.os }}-${{ matrix.ghc }}.json "${bin}"
-
-      - name: Run benchmark
-        run: |
-          cd doctest-parallel
-          hyperfine -M 5 --warmup 3 --export-json results-${{ matrix.os }}-${{ matrix.ghc }}.json "cabal run doctests"
-          cp *.json ..
+          cargo size --release --bin benchmark-cargo 
+          cargo size --bin benchmark-cargo
+          release_size="$(cargo size --release --bin benchmark-cargo |& tail -n 1 | egrep -o '^[ ]+[0-9]+' | egrep -o '[0-9]+')"
+          debug_size="$(cargo size --bin benchmark-cargo |& tail -n 1 | egrep -o '^[ ]+[0-9]+' | egrep -o '[0-9]+')"
+          echo "{\"results\": [{\"debug\": $debug_size, \"release\": $release_size}]}" > results-${{ matrix.os }}-${{ matrix.rust }}.json
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: results-${{ matrix.os }}-${{ matrix.ghc }}
-          path: results-${{ matrix.os }}-${{ matrix.ghc }}.json
+          name: results-${{ matrix.os }}-${{ matrix.rust }}
+          path: results-${{ matrix.os }}-${{ matrix.rust }}.json
 
   collect-results:
     name: Collect results
@@ -152,15 +98,15 @@ jobs:
           IFS=$'\n'
 
           oss="$(.github/scripts/get_matrix_values.sh os)"
-          ghcs="$(.github/scripts/get_matrix_values.sh ghc)"
+          rusts="$(.github/scripts/get_matrix_values.sh rust)"
 
-          echo "os,ghc,mean,stddev,median,min,max" > results.csv
+          echo "os,rust,debug,release" > results.csv
           for os in $oss; do
-            for ghc in $ghcs; do
-              filename="results-${os}-${ghc}.json"
+            for rust in $rusts; do
+              filename="results-${os}-${rust}.json"
               if [ -f "${filename}" ]; then
-                echo -n "${os},${ghc}," >> results.csv
-                jq -r '.results[0]|[.mean, .stddev, .median, .min, .max] | @csv' "${filename}" >> results.csv
+                echo -n "${os},${rust}," >> results.csv
+                jq -r '.results[0]|[.debug, .release] | @csv' "${filename}" >> results.csv
               fi
             done
           done

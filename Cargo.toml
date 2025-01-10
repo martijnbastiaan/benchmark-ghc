@@ -1,0 +1,27 @@
+[package]
+name = "benchmark-cargo"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[profile.release]
+# Automatically strip symbols from the binary.
+strip = true
+
+# Optimize for size
+opt-level = "z"
+
+[dependencies]
+heapless = { version = "0.7", default-features = false }
+panic-halt = "0.2.0"
+
+[dependencies.riscv]
+git = "https://github.com/rslawson/riscv"
+branch = "rs/lto-fixes"
+package = "riscv"
+
+[dependencies.riscv-rt]
+git = "https://github.com/rslawson/riscv"
+branch = "rs/lto-fixes"
+package = "riscv-rt"
